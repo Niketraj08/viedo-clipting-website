@@ -1,0 +1,6 @@
+{
+  "name": "ClipForge AI",
+  "description": "AI-powered video clipping and viral shorts engine with Gemini multimodal analysis, facecam/gameplay split-screen layouts, multilingual word-level captions, and FFmpeg 1080p MP4 rendering.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
