@@ -492,45 +492,152 @@ async function startServer() {
     }
   });
 
+  async function inspectRemoteMediaUrl(rawUrl) {
+    if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+      return { error: 'Please enter a valid http(s) URL.', statusCode: 400 };
+    }
+
+    const isYouTube = /(?:youtube\.com\/watch|youtu\.be\/|youtube\.com\/shorts|youtube\.com\/live)/i.test(
+      rawUrl
+    );
+    if (isYouTube) {
+      const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(rawUrl)}&format=json`;
+      const resp = await fetch(oembedUrl);
+      if (!resp.ok) {
+        return {
+          error: 'Could not retrieve YouTube video metadata. Check if the video is public.',
+          statusCode: 400,
+        };
+      }
+      const meta = await resp.json();
+      return {
+        sourceType: 'youtube',
+        directIngestSupported: false,
+        title: meta.title,
+        author: meta.author_name,
+        thumbnailUrl: meta.thumbnail_url,
+        notice:
+          'YouTube metadata verified via oEmbed. Because direct third-party YouTube stream scraping is restricted, upload your MP4 source file or provide a direct MP4/HLS VOD URL to process with AI & FFmpeg.',
+      };
+    }
+
+    const kickVodMatch = rawUrl.match(/kick\.com\/(?:[^/]+\/videos|video)\/([0-9a-f-]{12,})/i);
+    if (kickVodMatch) {
+      const uuid = kickVodMatch[1];
+      try {
+        const resp = await fetch(`https://kick.com/api/v1/video/${uuid}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!resp.ok) {
+          return {
+            sourceType: 'kick_vod',
+            directIngestSupported: false,
+            title: 'Kick VOD Unavailable',
+            notice:
+              'This Kick VOD was not found or has expired/been removed by Kick. Please paste an active Kick VOD URL or upload a local video file.',
+          };
+        }
+        const data = await resp.json();
+        if (data?.source) {
+          return {
+            sourceType: 'kick_vod',
+            directIngestSupported: true,
+            resolvedStreamUrl: data.source,
+            title: data.livestream?.session_title || `Kick VOD ${uuid.slice(0, 8)}`,
+            author: data.livestream?.channel?.slug || 'Kick Creator',
+            thumbnailUrl: data.livestream?.thumbnail || undefined,
+            notice:
+              'Kick VOD HLS stream resolved cleanly. Ready for FFmpeg ingestion & Gemini AI clipping.',
+          };
+        }
+      } catch {
+        // fall through to unavailable notice
+      }
+      return {
+        sourceType: 'kick_vod',
+        directIngestSupported: false,
+        title: 'Kick VOD Unavailable',
+        notice:
+          'Could not resolve a playable stream from this Kick VOD link. Upload your video file or paste a direct .mp4 / .m3u8 URL.',
+      };
+    }
+
+    const kickChannelMatch = rawUrl.match(/^https?:\/\/(?:www\.)?kick\.com\/([a-zA-Z0-9_-]+)\/?(?:\?.*)?$/i);
+    if (kickChannelMatch) {
+      const slug = kickChannelMatch[1];
+      try {
+        const resp = await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/livestream`, {
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = resp.ok ? await resp.json() : null;
+        if (data?.data?.playback_url) {
+          return {
+            sourceType: 'kick_live',
+            directIngestSupported: true,
+            resolvedStreamUrl: data.data.playback_url,
+            title: data.data.session_title || `${slug} Live on Kick`,
+            author: slug,
+            thumbnailUrl: data.data.thumbnail?.url || undefined,
+            notice: 'Active Kick livestream resolved. Ready for HLS capture & AI clipping.',
+          };
+        }
+      } catch {
+        // ignore
+      }
+      return {
+        sourceType: 'kick_live',
+        directIngestSupported: false,
+        title: `${slug} on Kick`,
+        notice:
+          'This Kick channel is offline or returned no active livestream playback URL. Paste an active Kick VOD/stream URL or upload a local video file.',
+      };
+    }
+
+    const isDirectExt = /\.(mp4|mov|webm|mkv|m3u8)(\?|$)/i.test(rawUrl);
+    if (!isDirectExt) {
+      try {
+        const probeResp = await fetch(rawUrl, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-1024', 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(6000),
+        });
+        const contentType = (probeResp.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+          return {
+            sourceType: 'webpage',
+            directIngestSupported: false,
+            title: decodeURIComponent(path.basename(new URL(rawUrl).pathname) || new URL(rawUrl).hostname),
+            notice:
+              'This link points to an HTML webpage, not a direct video or HLS (.m3u8) stream. Please upload your video file (MP4/MOV/MKV/WebM) or paste a direct .mp4 / .m3u8 stream URL.',
+          };
+        }
+      } catch {
+        // let FFmpeg attempt if network probe was inconclusive
+      }
+    }
+
+    return {
+      sourceType: rawUrl.includes('.m3u8') ? 'hls_vod' : 'direct_url',
+      directIngestSupported: true,
+      resolvedStreamUrl: rawUrl,
+      title: decodeURIComponent(path.basename(new URL(rawUrl).pathname) || 'Remote Video Stream'),
+      notice: isDirectExt
+        ? 'Direct media stream detected. Ready for FFmpeg ingestion & Gemini AI analysis.'
+        : 'Remote URL ready. FFmpeg will attempt to ingest this stream.',
+    };
+  }
+
   // URL Metadata Inspection
   app.post('/api/projects/lookup-url', requireAuth, async (req, res) => {
     try {
       const { url } = req.body || {};
-      if (!url || !/^https?:\/\//i.test(url)) {
-        return res.status(400).json({ error: 'Please enter a valid http(s) URL.' });
+      const info = await inspectRemoteMediaUrl(url);
+      if (info.error) {
+        return res.status(info.statusCode || 400).json({ error: info.error });
       }
-      const isYouTube = /(?:youtube\.com\/watch|youtu\.be\/|youtube\.com\/shorts|youtube\.com\/live)/i.test(
-        url
-      );
-      if (isYouTube) {
-        const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
-        const resp = await fetch(oembedUrl);
-        if (!resp.ok) {
-          return res.status(400).json({
-            error: 'Could not retrieve YouTube video metadata. Check if the video is public.',
-          });
-        }
-        const meta = await resp.json();
-        return res.json({
-          sourceType: 'youtube',
-          directIngestSupported: false,
-          title: meta.title,
-          author: meta.author_name,
-          thumbnailUrl: meta.thumbnail_url,
-          notice:
-            'YouTube metadata verified via oEmbed. Because direct third-party YouTube stream scraping is restricted, upload your MP4 source file or provide a direct MP4/HLS VOD URL to process with AI & FFmpeg.',
-        });
-      }
-
-      const isDirectMedia = /\.(mp4|mov|webm|mkv|m3u8)(\?|$)/i.test(url);
-      return res.json({
-        sourceType: url.includes('.m3u8') ? 'hls_vod' : 'direct_url',
-        directIngestSupported: true,
-        title: decodeURIComponent(path.basename(new URL(url).pathname) || 'Remote Video Stream'),
-        notice: isDirectMedia
-          ? 'Direct media stream detected. Ready for FFmpeg ingestion & Gemini AI analysis.'
-          : 'Remote URL ready. FFmpeg will attempt to ingest this stream.',
-      });
+      return res.json(info);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -592,6 +699,14 @@ async function startServer() {
         return res.status(402).json({ error: 'Insufficient credits.' });
       }
 
+      const inspected = await inspectRemoteMediaUrl(url);
+      if (inspected.error) {
+        return res.status(inspected.statusCode || 400).json({ error: inspected.error });
+      }
+      if (!inspected.directIngestSupported || !inspected.resolvedStreamUrl) {
+        return res.status(400).json({ error: inspected.notice });
+      }
+
       const projectId = uuidv4();
       const targetPath = path.join(storagePaths.uploads, `${projectId}.mp4`);
       const options = {
@@ -607,8 +722,8 @@ async function startServer() {
       const project = await createProject({
         id: projectId,
         userId: req.user.id,
-        title: title || 'Remote Stream Clip Project',
-        sourceType: 'direct_url',
+        title: title || inspected.title || 'Remote Stream Clip Project',
+        sourceType: inspected.sourceType || 'direct_url',
         sourceUrl: url,
         sourcePath: targetPath,
         options,
@@ -625,7 +740,7 @@ async function startServer() {
             type: 'progress',
             project: getProjectById(projectId),
           });
-          await downloadRemoteMedia(url, targetPath);
+          await downloadRemoteMedia(inspected.resolvedStreamUrl, targetPath);
           await runProjectPipeline({ projectId, sourcePath: targetPath, options });
         } catch (err) {
           const failed = await updateProject(projectId, {
@@ -956,10 +1071,21 @@ async function startServer() {
       const { title, mode, streamUrl, language, format, captionStyle, minViralScore } =
         req.body || {};
 
-      if (mode === 'hls' && (!streamUrl || !/^https?:\/\//i.test(streamUrl))) {
-        return res.status(400).json({
-          error: 'An authorized HTTP(S) HLS (.m3u8) stream URL is required for HLS monitoring.',
-        });
+      let resolvedLiveUrl = streamUrl;
+      if (mode === 'hls') {
+        if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
+          return res.status(400).json({
+            error: 'An authorized HTTP(S) HLS (.m3u8) or Kick channel URL is required for HLS monitoring.',
+          });
+        }
+        const inspected = await inspectRemoteMediaUrl(streamUrl);
+        if (inspected.error) {
+          return res.status(inspected.statusCode || 400).json({ error: inspected.error });
+        }
+        if (!inspected.directIngestSupported || !inspected.resolvedStreamUrl) {
+          return res.status(400).json({ error: inspected.notice });
+        }
+        resolvedLiveUrl = inspected.resolvedStreamUrl;
       }
 
       const project = await createProject({
@@ -976,7 +1102,7 @@ async function startServer() {
         projectId: project.id,
         title: title || 'Live Stream Session',
         mode: mode || 'studio_capture',
-        streamUrl: streamUrl || null,
+        streamUrl: resolvedLiveUrl || null,
         language: language || 'english',
         format: format || '9:16',
         captionStyle: captionStyle || 'neon_pop',

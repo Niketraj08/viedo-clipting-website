@@ -39,7 +39,12 @@ function runProcess(cmd, args, timeoutMs = 180000) {
         if (code === 0) {
           resolve({ stdout, stderr });
         } else {
-          reject(new Error(`${cmd} exited with code ${code}: ${stderr.slice(-800)}`));
+          const cleaned = stderr
+            .split('\n')
+            .filter((line) => !/^\s*(configuration:|lib(av|sw|post)|built with|ffmpeg version)/i.test(line))
+            .join('\n')
+            .trim();
+          reject(new Error(`${cmd} exited with code ${code}: ${(cleaned || stderr).slice(-600)}`));
         }
       }
     });
@@ -130,14 +135,19 @@ export async function downloadRemoteMedia(url, outPath) {
     'ffmpeg',
     [
       '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-user_agent',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
       '-i',
       url,
       '-t',
-      '600',
+      '180',
       '-c:v',
       'libx264',
       '-preset',
-      'veryfast',
+      'ultrafast',
       '-crf',
       '23',
       '-c:a',

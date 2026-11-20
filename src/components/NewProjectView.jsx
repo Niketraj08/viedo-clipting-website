@@ -267,7 +267,7 @@ export default function NewProjectView({ user, onProjectStarted }) {
             <div className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5" htmlFor="vod-url">
-                  YouTube URL or Direct MP4 / HLS (.m3u8) Stream URL
+                  Kick VOD/Live URL, Direct MP4 / HLS (.m3u8) URL, or YouTube Link
                 </label>
                 <div className="flex flex-col sm:flex-row gap-3">
                   <input
@@ -278,7 +278,7 @@ export default function NewProjectView({ user, onProjectStarted }) {
                       setVideoUrl(e.target.value);
                       setUrlLookup(null);
                     }}
-                    placeholder="https://example.com/vod.mp4 or https://www.youtube.com/watch?v=..."
+                    placeholder="https://kick.com/channel/videos/... or https://example.com/vod.mp4"
                     className="flex-1 rounded-xl bg-[#09090F] border border-white/15 px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
                   />
                   <button
@@ -312,7 +312,7 @@ export default function NewProjectView({ user, onProjectStarted }) {
                       ) : (
                         <span className="text-amber-300 inline-flex items-center gap-1">
                           <AlertCircle className="w-3.5 h-3.5" />
-                          YouTube metadata verified · Source file required
+                          Source file or active direct stream required
                         </span>
                       )}
                     </div>
@@ -327,7 +327,7 @@ export default function NewProjectView({ user, onProjectStarted }) {
                         onClick={() => setSourceMode('upload')}
                         className="mt-3 text-xs font-semibold text-violet-300 hover:text-violet-200 underline"
                       >
-                        Switch to File Upload to process your MP4 directly
+                        Switch to File Upload to process your MP4/MKV directly
                       </button>
                     )}
                   </div>
