@@ -59,9 +59,22 @@ function loadDb() {
     const parsed = JSON.parse(raw);
     dbCache = {
       users: Array.isArray(parsed.users) ? parsed.users : [],
-      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+      projects: Array.isArray(parsed.projects)
+        ? parsed.projects.map((p) =>
+            p.status === 'processing' || p.status === 'queued'
+              ? {
+                  ...p,
+                  status: 'failed',
+                  stage: 'Interrupted by server restart',
+                  error: 'Server restarted while processing. Please retry this video.',
+                }
+              : p
+          )
+        : [],
       clips: Array.isArray(parsed.clips) ? parsed.clips : [],
-      livestreams: Array.isArray(parsed.livestreams) ? parsed.livestreams : [],
+      livestreams: Array.isArray(parsed.livestreams)
+        ? parsed.livestreams.map((s) => (s.status === 'active' ? { ...s, status: 'stopped' } : s))
+        : [],
       transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
     };
     return dbCache;
@@ -74,6 +87,7 @@ function loadDb() {
 function persistDb() {
   const snapshot = JSON.stringify(dbCache, null, 2);
   writeQueue = writeQueue.then(async () => {
+    ensureStorageDirs();
     const tmpPath = `${DB_PATH}.tmp`;
     await fs.promises.writeFile(tmpPath, snapshot, 'utf8');
     await fs.promises.rename(tmpPath, DB_PATH);

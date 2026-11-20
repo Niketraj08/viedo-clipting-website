@@ -55,8 +55,8 @@ async function withGeminiRetry(fn, { maxRetries = 4, timeoutMs = 75000, onRetry 
       if (!isTransient || attempt === maxRetries) {
         throw err;
       }
-      const delayMs = Math.min(10000, 1500 * Math.pow(2, attempt - 1));
-      console.warn(`[Gemini] Transient error on attempt ${attempt}/${maxRetries}: ${msg.slice(0, 140)}. Retrying in ${delayMs}ms...`);
+      const delayMs = Math.min(8000, 1000 * attempt);
+      console.log(`[Gemini] Attempt ${attempt}/${maxRetries} hit transient availability (${status || 'retryable'}); switching/retrying in ${delayMs}ms...`);
       await onRetry?.(attempt + 1, maxRetries, delayMs);
       await new Promise((r) => setTimeout(r, delayMs));
     }
@@ -214,7 +214,7 @@ export async function analyzeVideoWithGemini({
 
     const response = await withGeminiRetry(
       (attempt) => {
-        const model = attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
+        const model = attempt >= 2 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
         return ai.models.generateContent({
           model,
           contents: [
@@ -224,7 +224,7 @@ export async function analyzeVideoWithGemini({
             },
           ],
           config: {
-            thinkingConfig: { thinkingLevel: attempt >= 3 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
+            thinkingConfig: { thinkingLevel: attempt >= 2 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
             responseMimeType: 'application/json',
             responseSchema: ANALYSIS_SCHEMA,
           },
@@ -274,7 +274,7 @@ Source words: ${JSON.stringify(words)}`;
 
   const response = await withGeminiRetry((attempt) =>
     ai.models.generateContent({
-      model: attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
+      model: attempt >= 2 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -317,7 +317,7 @@ export async function analyzeLivestreamSegmentWithGemini({ segmentPath, duration
 
     const response = await withGeminiRetry((attempt) =>
       ai.models.generateContent({
-        model: attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
+        model: attempt >= 2 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
         contents: [
           {
             role: 'user',
@@ -330,7 +330,7 @@ export async function analyzeLivestreamSegmentWithGemini({ segmentPath, duration
           },
         ],
         config: {
-          thinkingConfig: { thinkingLevel: attempt >= 3 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
+          thinkingConfig: { thinkingLevel: attempt >= 2 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
