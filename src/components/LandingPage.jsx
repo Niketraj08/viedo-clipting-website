@@ -1,12 +1,8 @@
 import { ArrowRight, Check, Film, Languages, Radio, Scissors, Sliders, Video } from 'lucide-react';
 
-export default function LandingPage({ user, onOpenAuth, onEnterWorkspace }) {
+export default function LandingPage({ onEnterWorkspace }) {
   const handlePrimaryAction = () => {
-    if (user) {
-      onEnterWorkspace();
-    } else {
-      onOpenAuth('register');
-    }
+    onEnterWorkspace('new_project');
   };
 
   return (
@@ -42,7 +38,7 @@ export default function LandingPage({ user, onOpenAuth, onEnterWorkspace }) {
               onClick={handlePrimaryAction}
               className="neon-accent-btn text-white text-xs sm:text-sm font-semibold px-4 py-2 rounded-lg transition-all whitespace-nowrap shrink-0"
             >
-              {user ? 'Open Studio' : 'Start Clipping Free'}
+              Open Clip Studio
             </button>
           </div>
         </div>
@@ -75,18 +71,16 @@ export default function LandingPage({ user, onOpenAuth, onEnterWorkspace }) {
                   onClick={handlePrimaryAction}
                   className="neon-accent-btn text-white text-sm font-semibold px-6 py-3 rounded-xl transition-all inline-flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
-                  <span>{user ? 'Go to Dashboard' : 'Create Free Account'}</span>
+                  <span>Start Clipping Now</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
-                {!user && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenAuth('login')}
-                    className="text-sm font-semibold text-slate-200 hover:text-white px-5 py-3 rounded-xl border border-white/15 hover:bg-white/5 transition-colors whitespace-nowrap shrink-0"
-                  >
-                    Sign In
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => onEnterWorkspace('livestream')}
+                  className="text-sm font-semibold text-slate-200 hover:text-white px-5 py-3 rounded-xl border border-white/15 hover:bg-white/5 transition-colors whitespace-nowrap shrink-0"
+                >
+                  Live Stream Studio
+                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-400">
@@ -314,7 +308,7 @@ export default function LandingPage({ user, onOpenAuth, onEnterWorkspace }) {
             </div>
             <button
               type="button"
-              onClick={handlePrimaryAction}
+              onClick={() => onEnterWorkspace('livestream')}
               className="neon-accent-btn text-white text-sm font-semibold px-6 py-3 rounded-xl whitespace-nowrap shrink-0 inline-flex items-center gap-2"
             >
               <Video className="w-4 h-4" />

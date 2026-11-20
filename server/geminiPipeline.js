@@ -29,6 +29,41 @@ async function waitForFileActive(ai, fileName, timeoutMs = 180000) {
   throw new Error('Timed out waiting for Gemini File API to index video.');
 }
 
+async function withGeminiRetry(fn, { maxRetries = 4, timeoutMs = 75000, onRetry } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await Promise.race([
+        fn(attempt),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Gemini request timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+        ),
+      ]);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err || '');
+      const status = err?.status || err?.code;
+      const isTransient =
+        status === 429 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        /"code":\s*(429|500|502|503|504)/.test(msg) ||
+        /UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded|timed out|ECONNRESET/i.test(msg);
+
+      if (!isTransient || attempt === maxRetries) {
+        throw err;
+      }
+      const delayMs = Math.min(10000, 1500 * Math.pow(2, attempt - 1));
+      console.warn(`[Gemini] Transient error on attempt ${attempt}/${maxRetries}: ${msg.slice(0, 140)}. Retrying in ${delayMs}ms...`);
+      await onRetry?.(attempt + 1, maxRetries, delayMs);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 const ANALYSIS_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -144,32 +179,20 @@ export async function analyzeVideoWithGemini({
 
   try {
     const stat = await fs.promises.stat(videoPath);
-    let mediaPart;
     const t0 = Date.now();
-    if (stat.size <= 8 * 1024 * 1024) {
-      await onStatus?.(32, 'Sending compressed AI stream directly to Gemini Vision');
-      const bytes = await fs.promises.readFile(videoPath);
-      mediaPart = {
-        inlineData: {
-          mimeType,
-          data: bytes.toString('base64'),
-        },
-      };
-    } else {
-      await onStatus?.(30, 'Uploading video to Gemini Files API');
-      uploadedFile = await ai.files.upload({
-        file: videoPath,
-        config: { mimeType },
-      });
-      await onStatus?.(36, 'Waiting for Gemini video indexing');
-      const activeFile = await waitForFileActive(ai, uploadedFile.name);
-      mediaPart = {
-        fileData: {
-          fileUri: activeFile.uri,
-          mimeType: activeFile.mimeType || mimeType,
-        },
-      };
-    }
+    await onStatus?.(30, 'Uploading video to Gemini Files API');
+    uploadedFile = await ai.files.upload({
+      file: videoPath,
+      config: { mimeType },
+    });
+    await onStatus?.(36, 'Waiting for Gemini video indexing');
+    const activeFile = await waitForFileActive(ai, uploadedFile.name);
+    const mediaPart = {
+      fileData: {
+        fileUri: activeFile.uri,
+        mimeType: activeFile.mimeType || mimeType,
+      },
+    };
 
     await onStatus?.(42, 'Gemini AI watching video & detecting highlights, facecam, and captions');
     console.log(`[Gemini] Starting highlight analysis (${(stat.size / 1024 / 1024).toFixed(2)} MB, ${duration.toFixed(1)}s)`);
@@ -189,20 +212,32 @@ export async function analyzeVideoWithGemini({
 4. For each clip, produce transcriptWords in ${langInstruction} with exact absolute timestamps [start, end] and highlight: true on key punchy words.
 5. Generate title, hook, description, 5 hashtags, viralScore (65-99), and viralReason.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: [
-        {
-          role: 'user',
-          parts: [mediaPart, { text: prompt }],
-        },
-      ],
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: ANALYSIS_SCHEMA,
+    const response = await withGeminiRetry(
+      (attempt) => {
+        const model = attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
+        return ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: 'user',
+              parts: [mediaPart, { text: prompt }],
+            },
+          ],
+          config: {
+            thinkingConfig: { thinkingLevel: attempt >= 3 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: ANALYSIS_SCHEMA,
+          },
+        });
       },
-    });
+      {
+        maxRetries: 4,
+        timeoutMs: 75000,
+        onRetry: async (nextAttempt, max) => {
+          await onStatus?.(45, `Gemini AI busy — retrying video analysis (attempt ${nextAttempt}/${max})`);
+        },
+      }
+    );
 
     console.log(`[Gemini] Completed highlight analysis in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     const parsed = JSON.parse(response.text || '{}');
@@ -237,26 +272,28 @@ Preserve the overall start and end time boundaries cleanly and mark impactful ke
 Clip context: ${clipContext || 'Short-form creator clip'}
 Source words: ${JSON.stringify(words)}`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            word: { type: Type.STRING },
-            start: { type: Type.NUMBER },
-            end: { type: Type.NUMBER },
-            highlight: { type: Type.BOOLEAN },
+  const response = await withGeminiRetry((attempt) =>
+    ai.models.generateContent({
+      model: attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              word: { type: Type.STRING },
+              start: { type: Type.NUMBER },
+              end: { type: Type.NUMBER },
+              highlight: { type: Type.BOOLEAN },
+            },
+            required: ['word', 'start', 'end', 'highlight'],
           },
-          required: ['word', 'start', 'end', 'highlight'],
         },
       },
-    },
-  });
+    })
+  );
 
   return JSON.parse(response.text || '[]');
 }
@@ -266,135 +303,125 @@ export async function analyzeLivestreamSegmentWithGemini({ segmentPath, duration
   let uploadedFile = null;
 
   try {
-    const stat = await fs.promises.stat(segmentPath);
-    let mediaPart;
-    if (stat.size <= 15 * 1024 * 1024) {
-      const bytes = await fs.promises.readFile(segmentPath);
-      mediaPart = {
-        inlineData: {
-          mimeType: 'video/mp4',
-          data: bytes.toString('base64'),
-        },
-      };
-    } else {
-      uploadedFile = await ai.files.upload({
-        file: segmentPath,
-        config: { mimeType: 'video/mp4' },
-      });
-      const activeFile = await waitForFileActive(ai, uploadedFile.name, 90000);
-      mediaPart = {
-        fileData: {
-          fileUri: activeFile.uri,
-          mimeType: 'video/mp4',
-        },
-      };
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            mediaPart,
-            {
-              text: `Analyze this ${duration.toFixed(1)}s livestream segment. Determine if it has an engaging/exciting moment worth clipping (isHighlight: true/false, viralScore 0-100). Detect facecamRegion and gameplayRegion (normalized 0..1), generate title, hook, hashtags, and word-level transcripts in english, hindi, and hinglish within [0, ${duration.toFixed(1)}].`,
-            },
-          ],
-        },
-      ],
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            isHighlight: { type: Type.BOOLEAN },
-            viralScore: { type: Type.INTEGER },
-            title: { type: Type.STRING },
-            hook: { type: Type.STRING },
-            hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
-            recommendedLayout: { type: Type.STRING },
-            facecamRegion: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                w: { type: Type.NUMBER },
-                h: { type: Type.NUMBER },
-              },
-              required: ['x', 'y', 'w', 'h'],
-            },
-            gameplayRegion: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                w: { type: Type.NUMBER },
-                h: { type: Type.NUMBER },
-              },
-              required: ['x', 'y', 'w', 'h'],
-            },
-            transcripts: {
-              type: Type.OBJECT,
-              properties: {
-                english: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      word: { type: Type.STRING },
-                      start: { type: Type.NUMBER },
-                      end: { type: Type.NUMBER },
-                      highlight: { type: Type.BOOLEAN },
-                    },
-                    required: ['word', 'start', 'end', 'highlight'],
-                  },
-                },
-                hindi: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      word: { type: Type.STRING },
-                      start: { type: Type.NUMBER },
-                      end: { type: Type.NUMBER },
-                      highlight: { type: Type.BOOLEAN },
-                    },
-                    required: ['word', 'start', 'end', 'highlight'],
-                  },
-                },
-                hinglish: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      word: { type: Type.STRING },
-                      start: { type: Type.NUMBER },
-                      end: { type: Type.NUMBER },
-                      highlight: { type: Type.BOOLEAN },
-                    },
-                    required: ['word', 'start', 'end', 'highlight'],
-                  },
-                },
-              },
-              required: ['english', 'hindi', 'hinglish'],
-            },
-          },
-          required: [
-            'isHighlight',
-            'viralScore',
-            'title',
-            'hook',
-            'hashtags',
-            'recommendedLayout',
-            'facecamRegion',
-            'gameplayRegion',
-            'transcripts',
-          ],
-        },
-      },
+    uploadedFile = await ai.files.upload({
+      file: segmentPath,
+      config: { mimeType: 'video/mp4' },
     });
+    const activeFile = await waitForFileActive(ai, uploadedFile.name, 90000);
+    const mediaPart = {
+      fileData: {
+        fileUri: activeFile.uri,
+        mimeType: activeFile.mimeType || 'video/mp4',
+      },
+    };
+
+    const response = await withGeminiRetry((attempt) =>
+      ai.models.generateContent({
+        model: attempt >= 3 ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              mediaPart,
+              {
+                text: `Analyze this ${duration.toFixed(1)}s livestream segment. Determine if it has an engaging/exciting moment worth clipping (isHighlight: true/false, viralScore 0-100). Detect facecamRegion and gameplayRegion (normalized 0..1), generate title, hook, hashtags, and word-level transcripts in english, hindi, and hinglish within [0, ${duration.toFixed(1)}].`,
+              },
+            ],
+          },
+        ],
+        config: {
+          thinkingConfig: { thinkingLevel: attempt >= 3 ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              isHighlight: { type: Type.BOOLEAN },
+              viralScore: { type: Type.INTEGER },
+              title: { type: Type.STRING },
+              hook: { type: Type.STRING },
+              hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
+              recommendedLayout: { type: Type.STRING },
+              facecamRegion: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  w: { type: Type.NUMBER },
+                  h: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'w', 'h'],
+              },
+              gameplayRegion: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  w: { type: Type.NUMBER },
+                  h: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'w', 'h'],
+              },
+              transcripts: {
+                type: Type.OBJECT,
+                properties: {
+                  english: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        start: { type: Type.NUMBER },
+                        end: { type: Type.NUMBER },
+                        highlight: { type: Type.BOOLEAN },
+                      },
+                      required: ['word', 'start', 'end', 'highlight'],
+                    },
+                  },
+                  hindi: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        start: { type: Type.NUMBER },
+                        end: { type: Type.NUMBER },
+                        highlight: { type: Type.BOOLEAN },
+                      },
+                      required: ['word', 'start', 'end', 'highlight'],
+                    },
+                  },
+                  hinglish: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        start: { type: Type.NUMBER },
+                        end: { type: Type.NUMBER },
+                        highlight: { type: Type.BOOLEAN },
+                      },
+                      required: ['word', 'start', 'end', 'highlight'],
+                    },
+                  },
+                },
+                required: ['english', 'hindi', 'hinglish'],
+              },
+            },
+            required: [
+              'isHighlight',
+              'viralScore',
+              'title',
+              'hook',
+              'hashtags',
+              'recommendedLayout',
+              'facecamRegion',
+              'gameplayRegion',
+              'transcripts',
+            ],
+          },
+        },
+      })
+    );
 
     return JSON.parse(response.text || '{}');
   } finally {

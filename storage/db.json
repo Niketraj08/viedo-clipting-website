@@ -1,0 +1,61 @@
+{
+  "users": [
+    {
+      "id": "a82acf60-6d2a-4dbf-a02e-6793f11652dc",
+      "name": "Creator Studio",
+      "email": "studio@clipforge.ai",
+      "passwordHash": "$2b$10$Ht/fvv11VOvakaEvJNMi4eS/uUNk3pRvdhck5jXymyIEFSZ3GFG2G",
+      "plan": "starter",
+      "credits": 120,
+      "settings": {
+        "defaultLanguage": "english",
+        "defaultFormat": "9:16",
+        "defaultCaptionStyle": "neon_pop",
+        "autoSplitScreen": true,
+        "exportQuality": "1080p"
+      },
+      "createdAt": "2026-11-20T09:07:38.143Z",
+      "updatedAt": "2026-11-20T09:07:38.143Z"
+    }
+  ],
+  "projects": [
+    {
+      "id": "9bb7292f-5b6f-4b61-b0ce-8a3712714b56",
+      "status": "processing",
+      "progress": 45,
+      "stage": "Gemini AI busy — retrying video analysis (attempt 2/4)",
+      "error": null,
+      "clipsCount": 0,
+      "createdAt": "2026-11-20T09:07:38.173Z",
+      "updatedAt": "2026-11-20T09:07:56.902Z",
+      "userId": "a82acf60-6d2a-4dbf-a02e-6793f11652dc",
+      "title": "Sample Gaming Clutch + Facecam VOD",
+      "sourceType": "sample_studio",
+      "sourcePath": "/app/applet/storage/uploads/9bb7292f-5b6f-4b61-b0ce-8a3712714b56_sample.mp4",
+      "options": {
+        "language": "hinglish",
+        "format": "9:16",
+        "layoutPreference": "split_screen",
+        "captionStyle": "neon_pop",
+        "musicTrack": "synth_pulse",
+        "clipCount": 2,
+        "mimeType": "video/mp4"
+      },
+      "duration": 15.5,
+      "resolution": "1280x720",
+      "thumbUrl": "/api/media/thumbs/proj_9bb7292f-5b6f-4b61-b0ce-8a3712714b56.jpg"
+    }
+  ],
+  "clips": [],
+  "livestreams": [],
+  "transactions": [
+    {
+      "id": "09f16593-5045-4d53-84a0-977a852d3f12",
+      "userId": "a82acf60-6d2a-4dbf-a02e-6793f11652dc",
+      "type": "credit_grant",
+      "amount": 120,
+      "description": "Welcome starter credits",
+      "createdAt": "2026-11-20T09:07:38.143Z"
+    }
+  ]
+}
